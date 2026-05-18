@@ -27,6 +27,8 @@ pub mod ir;
 pub mod log;
 pub mod utils;
 
+pub mod sequence;
+
 /// A parsed parameterized query. It still has parameter placeholders instead of actual parameter values.
 #[derive(Debug)]
 pub struct PreparedStatement {
