@@ -1,10 +1,11 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, rc::Rc};
 
 use crate::sequence::{
-    predictor::{
-        Config, Inertion, MakeAction, OrRejected, PredictedPredictedSmartActual, PredictedSmartActualSmartActual, Rejected, RejectedActual, RejectedPredicted, RejectedPredictedActual, RejectedPredictedSmartActual, RejectedPredictedSmartActualSmartActual
-    },
+    predictor::{Config, Inertion, MakeAction},
     simulation::Simulator,
+    strategy::{
+        MeldMax3MaxPredicted, MeldMax3Predicted, MeldMax3Sigma, OrRejected, PredictedPredictedSmartActual, PredictedSmartActualSmartActual, Rejected, RejectedActual, RejectedPredicted, RejectedPredictedActual, RejectedPredictedSmartActual, RejectedPredictedSmartActualSmartActual
+    },
 };
 
 #[test]
@@ -28,60 +29,82 @@ fn run_dataset(name: &str, queries: &Vec<super::simulation::Query>, dropped: &BT
         dropped.len()
     );
 
-    run_strategy(Rejected {}, &queries, &dropped);
+    run_strategy(Rejected {}, false, &queries, &dropped);
 
-    run_strategy(RejectedActual {}, &queries, &dropped);
-    run_strategy(RejectedPredicted {}, &queries, &dropped);
-    run_strategy(RejectedPredictedActual {}, &queries, &dropped);
-    run_strategy(RejectedPredictedSmartActual {}, &queries, &dropped);
-    run_strategy(OrRejected::new(PredictedPredictedSmartActual {}), &queries, &dropped);
-    run_strategy(OrRejected::new(PredictedSmartActualSmartActual {}), &queries, &dropped);
+    run_strategy(RejectedActual {}, false, &queries, &dropped);
+    run_strategy(RejectedPredicted {}, false, &queries, &dropped);
+    run_strategy(RejectedPredictedActual {}, false, &queries, &dropped);
+    run_strategy(RejectedPredictedSmartActual {}, false, &queries, &dropped);
+    run_strategy(
+        OrRejected::new(PredictedPredictedSmartActual {}),
+        false,
+        &queries,
+        &dropped,
+    );
+    run_strategy(
+        OrRejected::new(PredictedSmartActualSmartActual {}),
+        false,
+        &queries,
+        &dropped,
+    );
     run_strategy(
         RejectedPredictedSmartActualSmartActual {},
+        false,
         &queries,
         &dropped,
     );
 
+    run_strategy(OrRejected::new(MeldMax3Predicted {}), true, &queries, &dropped);
+    run_strategy(OrRejected::new(MeldMax3Sigma {}), true, &queries, &dropped);
+    run_strategy(OrRejected::new(MeldMax3MaxPredicted {}), true, &queries, &dropped);
+
     println!("");
 }
 
-fn run_strategy<M: MakeAction + Copy>(
+fn run_strategy<M: MakeAction + Copy + 'static>(
     action: M,
+    inerted: bool,
     queries: &Vec<super::simulation::Query>,
     dropped: &BTreeSet<u64>,
 ) {
     println!("");
 
-    let inertion = vec![(3, 4), (1, 2), (1, 4), (1, 8)];
+    let inertion = if inerted {
+        vec![(3, 4), (7, 8), (15, 16)]
+    } else {
+        vec![(15, 16)]
+    };
+
+    let strategy_name = std::any::type_name::<M>().to_string().replace("sql::sequence::strategy::", "");
+
     for (num, den) in inertion {
         let config = Config {
             inertion: Inertion::new(num, den).unwrap(),
-            action: action,
+            action: Rc::new(action),
         };
-        run_test(config, &queries, &dropped);
+        run_test(config, &strategy_name, &queries, &dropped);
     }
 }
 
-fn run_test<M: MakeAction + Copy>(
-    config: Config<M>,
+fn run_test(
+    config: Config,
+    strategy: &str,
     queries: &Vec<super::simulation::Query>,
     dropped: &BTreeSet<u64>,
 ) {
+    let inertion = config.inertion;
+
     let mut simulator = Simulator::new(config);
     simulator.set_queries(queries.clone());
     simulator.set_drop_term_request(dropped.clone());
     simulator.run();
 
-    println!(
-        "-- strategy: {}, inertion: {:?}",
-        std::any::type_name::<M>(),
-        config.inertion,
-    );
+    println!("-- strategy: {}, inertion: {}", strategy, inertion,);
 
     let stats_term = simulator.extract_terms();
     let stats_query = simulator.extract_queries();
 
-    let mut query_rejected_count = 0_u64;
+    let mut query_rejected_count = 0_i64;
     let mut non_zero_request_count = 0_u64;
     let mut prediction_negative_diff = 0;
 
@@ -114,7 +137,8 @@ fn run_test<M: MakeAction + Copy>(
     let mut delayed = 0;
     let mut invertions = 0_u64;
     let mut id_latency = 0;
-    let dropped_count = stats_query.iter().map(|x| x.id_result).max().unwrap() + 1 - stats_query.len() as u64;
+    let dropped_count =
+        stats_query.iter().map(|x| x.id_result).max().unwrap() + 1 - stats_query.len() as u64;
 
     for query in &stats_query {
         query_latency += query.term_result.saturating_sub(query.term_start);

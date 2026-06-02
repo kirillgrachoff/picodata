@@ -1,10 +1,10 @@
-use std::{collections::BTreeSet, iter::zip};
+use std::{collections::BTreeSet, iter::zip, mem::swap};
 
 use rand::{self, random_range};
 
 use super::{
     interpreter::{DebugState, Interpreter, Range},
-    predictor::{Config, MakeAction},
+    predictor::Config,
 };
 
 struct Sequence {
@@ -44,25 +44,16 @@ pub struct Query {
     pub id_result: u64,
 }
 
-// struct Shard<M: MakeAction + Copy> {
-//     interpreter: Interpreter<M>,
-// }
-
-// impl<M: MakeAction + Copy> Shard<M> {
-//     fn new(config: Config<M>) -> Self {
-//         Self {
-//             interpreter: Interpreter::new(config),
-//         }
-//     }
-// }
-
-pub struct Simulator<M: MakeAction + Copy> {
+pub struct Simulator {
     sequence: Sequence,
     queries: Vec<Query>,
     term_max: u64,
     drop_term_requests: BTreeSet<u64>,
+
+    lock_requests_inflight: Vec<u64>,
+
     terms: Vec<Vec<DebugState>>,
-    shards: Vec<Interpreter<M>>,
+    shards: Vec<Interpreter>,
 }
 
 fn fill_indices(q: &mut Vec<Query>) {
@@ -165,19 +156,20 @@ pub fn generate_drops(term_count: usize, drop_request_count: usize) -> BTreeSet<
     drop_request
 }
 
-impl<M: MakeAction + Copy> Simulator<M> {
+impl Simulator {
     const SHARD_COUNT: usize = 5;
     const TERM_DELTA_MAX: u64 = 10;
 
-    pub fn new(config: Config<M>) -> Self {
+    pub fn new(config: Config) -> Self {
         Self {
             sequence: <_>::default(),
             queries: <_>::default(),
             drop_term_requests: <_>::default(),
+            lock_requests_inflight: <_>::default(),
             term_max: 0,
             terms: <_>::default(),
             shards: (0..Self::SHARD_COUNT)
-                .map(|_| Interpreter::new(config))
+                .map(|_| Interpreter::new(config.clone()))
                 .collect(),
         }
     }
@@ -191,18 +183,21 @@ impl<M: MakeAction + Copy> Simulator<M> {
         self.drop_term_requests = drop_term_request;
     }
 
-    fn advance_term(&mut self, current_term: u64) {
-        let requests = self.create_lock_request();
+    fn advance_term(&mut self, _current_term: u64) {
+        for shard in &mut self.shards {
+            shard.finish_term();
+        }
+
+        let mut requests = self.create_lock_request();
+        // swap(&mut requests, &mut self.lock_requests_inflight);
 
         self.terms.push(self.dump());
 
-        if !self.drop_term_requests.contains(&current_term) {
-            let responses = requests
-                .into_iter()
-                .map(|n| self.sequence.lock(n))
-                .collect();
-            self.handle_lock_response(responses);
-        }
+        let responses = requests
+            .into_iter()
+            .map(|n| self.sequence.lock(n))
+            .collect();
+        self.handle_lock_response(responses);
 
         for shard in &mut self.shards {
             shard.advance_term();

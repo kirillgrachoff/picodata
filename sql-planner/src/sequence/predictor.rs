@@ -1,9 +1,16 @@
-use std::cmp::{max};
+use std::cmp::max;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Inertion {
-    numerator: u64,
-    denominator: u64,
+    numerator: i64,
+    denominator: i64,
+}
+
+impl std::fmt::Display for Inertion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.numerator, self.denominator)
+    }
 }
 
 #[derive(Debug)]
@@ -12,7 +19,7 @@ pub enum InertionError {
 }
 
 impl Inertion {
-    pub fn new(num: u64, den: u64) -> Result<Self, InertionError> {
+    pub fn new(num: i64, den: i64) -> Result<Self, InertionError> {
         if den == 0 {
             Err(InertionError::ZeroDenominator)
         } else {
@@ -24,34 +31,34 @@ impl Inertion {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Config<M: MakeAction + Copy> {
+#[derive(Clone)]
+pub struct Config {
     pub inertion: Inertion,
-    pub action: M,
+    pub action: Rc<dyn MakeAction>,
 }
 
 #[derive(Default, Clone, Copy)]
 pub struct TermState {
-    pub query_prediction_count: u64,
-    pub query_actual_count: u64,
+    pub query_prediction_count: i64,
+    pub query_actual_count: i64,
 
-    pub query_pending_count: u64,
-    pub id_remained_count: u64,
+    pub query_pending_count: i64,
+    pub id_remained_count: i64,
 }
 
 #[derive(Clone, Copy)]
 pub struct Action {
-    pub id_wildcard_recommended_count: u64,
+    pub id_wildcard_recommended_count: i64,
 }
 
 #[derive(Clone, Copy)]
 pub struct Prediction {
-    pub query_count: u64,
+    pub query_count: i64,
 }
 
 impl<T> From<T> for Prediction
 where
-    T: Into<u64>,
+    T: Into<i64>,
 {
     fn from(value: T) -> Self {
         Prediction {
@@ -60,158 +67,122 @@ where
     }
 }
 
-fn make_prediction<M: MakeAction + Copy>(
-    config: Config<M>,
-    prediction_old: u64,
-    query_count: u64,
-) -> Prediction {
-    let prediction_old = if prediction_old == 0 {
-        query_count
-    } else {
-        prediction_old
-    };
-
-    let mut result = prediction_old * config.inertion.numerator
-        + query_count * (config.inertion.denominator - config.inertion.numerator);
-
-    result /= config.inertion.denominator;
-
-    result.into()
+fn make_prediction(state: &PredictorState) -> Prediction {
+    (state.stats.mean + state.stats.MAD).into()
 }
 
 pub trait MakeAction {
-    fn make(&self, state: TermState, pred: Prediction) -> Action;
+    fn make(&self, state: &PredictorState, pred: Prediction) -> Action;
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct PredictedPredictedSmartActual {}
-impl MakeAction for PredictedPredictedSmartActual {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        let query_count = state.query_actual_count;
-        let delta = max(pred.query_count, query_count);
-        Action {
-            id_wildcard_recommended_count: pred.query_count * 2 + delta,
-        }
+fn div_up(a: i64, b: i64) -> i64 {
+    (a + b - 1) / b
+}
+
+#[derive(Default, Clone)]
+pub struct PredictorStats {
+    pub mean: i64,
+    pub MAD: i64,
+    pub MSD: i64,
+}
+
+impl PredictorStats {
+    pub fn clear(&mut self) {
+        *self = <_>::default();
     }
-}
 
-/// Не подходит: не преодолевает потерю запросов
-#[derive(Default, Clone, Copy)]
-pub struct PredictedSmartActualSmartActual {}
-impl MakeAction for PredictedSmartActualSmartActual {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        let query_count = state.query_actual_count;
-        let delta = max(pred.query_count, query_count);
-        Action {
-            id_wildcard_recommended_count: pred.query_count + 2 * delta,
-        }
+    fn non_zero_values(term: &[TermState]) -> impl Iterator<Item = &TermState> {
+        term.iter().filter(|x| x.query_actual_count > 0)
     }
-}
 
-#[derive(Default, Clone, Copy)]
-pub struct OrRejected<M: MakeAction + Copy> {
-    make_action: M,
-}
-
-impl<M: MakeAction + Copy> OrRejected<M> {
-    pub fn new(make_action: M) -> Self {
-        Self {
-            make_action: make_action,
-        }
-    }
-}
-
-impl<M: MakeAction + Copy> MakeAction for OrRejected<M> {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        let action = self.make_action.make(state, pred);
-        if action.id_wildcard_recommended_count == 0 {
-            Action {
-                id_wildcard_recommended_count: state.query_pending_count,
+    pub fn calculate(&mut self, term: &[TermState]) {
+        let non_zero_len = {
+            let len = Self::non_zero_values(term).count();
+            if len > 0 {
+                len
+            } else {
+                1
             }
-        } else {
-            action
-        }
+        };
+
+        let mean = div_up(
+            Self::non_zero_values(term).map(|x| x.query_actual_count).sum(),
+            non_zero_len as i64,
+        );
+        self.mean = mean;
+        self.MAD = div_up(
+            Self::non_zero_values(term)
+                .map(|x| (x.query_actual_count as i64 - mean).abs())
+                .sum(),
+            non_zero_len as i64,
+        );
+        self.MSD = div_up(
+            Self::non_zero_values(term)
+                .map(|x| (x.query_actual_count as i64 - mean).pow(2))
+                .sum(),
+            non_zero_len as i64,
+        );
     }
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct RejectedPredictedSmartActualSmartActual {}
-impl MakeAction for RejectedPredictedSmartActualSmartActual {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        let query_count = state.query_actual_count;
-        let delta = max(pred.query_count, query_count);
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count + pred.query_count + 2 * delta,
-        }
+#[derive(Default, Clone)]
+pub struct MeldingMax {
+    value: i64,
+}
+
+impl MeldingMax {
+    pub fn update(&mut self, value: i64) {
+        self.value = max(self.value, value);
+    }
+
+    pub fn get(&self) -> i64 {
+        self.value
+    }
+
+    pub fn meld(&mut self, inertion: &Inertion) {
+        let x = self.value;
+
+        self.value = x * inertion.numerator / inertion.denominator;
     }
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct RejectedPredicted {}
-impl MakeAction for RejectedPredicted {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count + pred.query_count,
-        }
+#[derive(Default, Clone)]
+pub struct PredictorState {
+    pub term: [TermState; 10],
+
+    pub stats: PredictorStats,
+    pub max: MeldingMax,
+}
+
+impl PredictorState {
+    fn push(&mut self, term: TermState, inertion: &Inertion) {
+        self.stats.clear();
+        self.max.meld(inertion);
+        self.max.update(term.query_actual_count);
+
+        self.term.rotate_left(1);
+        *self.term.last_mut().unwrap() = term;
     }
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct RejectedPredictedSmartActual {}
-impl MakeAction for RejectedPredictedSmartActual {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        let query_count = state.query_actual_count;
-        let delta = max(pred.query_count, query_count);
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count + pred.query_count + delta,
-        }
-    }
+pub struct Predictor {
+    config: Config,
 }
 
-#[derive(Default, Clone, Copy)]
-pub struct RejectedPredictedActual {}
-impl MakeAction for RejectedPredictedActual {
-    fn make(&self, state: TermState, pred: Prediction) -> Action {
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count + pred.query_count + state.query_actual_count,
-        }
-    }
-}
-
-#[derive(Default, Clone, Copy)]
-pub struct RejectedActual {}
-impl MakeAction for RejectedActual {
-    fn make(&self, state: TermState, _pred: Prediction) -> Action {
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count + state.query_actual_count,
-        }
-    }
-}
-
-#[derive(Default, Clone, Copy)]
-pub struct Rejected {}
-impl MakeAction for Rejected {
-    fn make(&self, state: TermState, _pred: Prediction) -> Action {
-        Action {
-            id_wildcard_recommended_count: state.query_pending_count,
-        }
-    }
-}
-
-pub struct Predictor<M: MakeAction + Copy> {
-    config: Config<M>,
-}
-
-impl<M: MakeAction + Copy> Predictor<M> {
-    pub fn new(config: Config<M>) -> Self {
-        Self {
-            config: config,
-        }
+impl Predictor {
+    pub fn new(config: Config) -> Self {
+        Self { config: config }
     }
 
-    pub fn prepare_next_term(&self, state: TermState) -> (Prediction, Action) {
-        let prediction = make_prediction(self.config, state.query_prediction_count, state.query_actual_count);
+    /// Contract: Current Term is finished
+    pub fn prepare_next_term(&self, state: &PredictorState) -> (Prediction, Action) {
+        let prediction = make_prediction(state);
         let action = self.config.action.make(state, prediction);
         (prediction, action)
+    }
+
+    pub fn finish_term(&self, state: &mut PredictorState, term: TermState) {
+        state.push(term, &self.config.inertion);
+        state.stats.calculate(&state.term);
     }
 }
