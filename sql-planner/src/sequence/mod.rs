@@ -3,5 +3,5 @@ pub mod strategy;
 pub mod interpreter;
 
 mod simulation;
+#[cfg(test)]
 mod tests;
-mod murmur_bench;

@@ -2085,6 +2085,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mur3"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97af489e1e21b68de4c390ecca6703318bc1aa16e9733bcb62c089b73c6fbb1b"
+
+[[package]]
 name = "nibble_vec"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3487,12 +3493,14 @@ dependencies = [
  "blake3",
  "chrono",
  "comfy-table",
+ "criterion",
  "hash32",
  "indenter",
  "insta",
  "itertools 0.10.5",
  "lazy_static",
  "lru",
+ "mur3",
  "pest",
  "pest_derive",
  "pretty_assertions",
