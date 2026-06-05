@@ -40,15 +40,21 @@ thiserror = { workspace = true }
 time = { workspace = true, features = ["parsing", "formatting", "macros"] }
 uuid = { version = "1.1", features = ["v4", "fast-rng", "macro-diagnostics"] }
 smallvec = { workspace = true }
+mur3 = { version = "0.1"}
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 serde_yaml = "0.9.34"
 insta = { version = "1.42", features = ["yaml"] }
 tarantool = { workspace = true, features = ["standalone_decimal","extra_impls"] }
+criterion = "0.5"
 
 [lib]
 name = "sql"
 
 [features]
 mock = []
+
+[[bench]]
+name = "murmur_bench"
+harness = false
